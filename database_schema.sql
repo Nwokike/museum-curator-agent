@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS artifact_queue (
     status TEXT DEFAULT 'PENDING',    
     museum_name TEXT,
     retry_count INT DEFAULT 0,
+    last_error TEXT,                  -- NEW: Tracks the reason for failure
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -23,21 +24,21 @@ CREATE TABLE IF NOT EXISTS archives (
     -- Identity & Rights (DC: Identifier, Rights)
     accession_number TEXT,            
     original_url TEXT NOT NULL,       
-    rights_holder TEXT,               -- Was: copyright_holder
+    rights_holder TEXT,               
     
     -- Description (DC: Title, Type, Subject)
     title TEXT,
     type TEXT DEFAULT 'Physical Object', 
-    subject TEXT,                     -- Was: category
+    subject TEXT,                     
     
     -- Provenance (DC: Creator, Spatial, Temporal)
-    creator TEXT,                     -- Was: original_author (e.g., Field Collector)
-    spatial_coverage TEXT,            -- Was: location (e.g., "Igboland, Nigeria")
-    temporal_coverage TEXT,           -- Was: date_created (e.g., "1904-1910")
+    creator TEXT,                     
+    spatial_coverage TEXT,            
+    temporal_coverage TEXT,           
     
     -- Content (DC: Description)
-    description_museum TEXT,          -- Raw museum text
-    description_ai TEXT,              -- Synthesized Abstract
+    description_museum TEXT,          
+    description_ai TEXT,              
     
     -- Management
     posted_to_socials BOOLEAN DEFAULT FALSE,
@@ -50,7 +51,7 @@ CREATE TABLE IF NOT EXISTS media_assets (
     artifact_id TEXT REFERENCES archives(id) ON DELETE CASCADE,
     original_image_url TEXT,          
     file_type TEXT,                   
-    role TEXT DEFAULT 'Primary',      -- 'Primary', 'Detail', 'Verso'
+    role TEXT DEFAULT 'Primary',      
     hf_path TEXT,                     
     visual_analysis_raw TEXT,         
     created_at TIMESTAMP DEFAULT NOW()

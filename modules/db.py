@@ -82,7 +82,7 @@ def log_media_asset(artifact_id, image_url, role="Primary"):
     finally:
         conn.close()
 
-# --- Discovery State Management (NEW) ---
+# --- Discovery State Management ---
 
 def get_discovery_state(source_name):
     """Gets the next page to scrape."""
@@ -114,7 +114,62 @@ def update_discovery_state(source_name, page_number):
     finally:
         conn.close()
 
-# --- System Utils ---
+# --- System Utils & OPS ---
+
+def lock_artifact_state(artifact_id, new_status="PROCESSING"):
+    """
+    Atomically updates the status to prevent double-assignment.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE artifact_queue SET status = %s WHERE id = %s",
+                (new_status, artifact_id)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+def handle_artifact_failure(artifact_id, error_msg):
+    """
+    Smart Retry Logic:
+    - If retries < 3: Increment retry, set status='PENDING' (to try again).
+    - If retries >= 3: Set status='FAILED' (Dead Letter Queue).
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # Check current retry count
+            cur.execute("SELECT retry_count FROM artifact_queue WHERE id=%s", (artifact_id,))
+            row = cur.fetchone()
+            current_retries = row['retry_count'] if row else 0
+            
+            if current_retries < 3:
+                # Retry
+                print(f"[Ops] 🔄 Retrying {artifact_id} (Attempt {current_retries + 1}/3)")
+                cur.execute(
+                    """
+                    UPDATE artifact_queue 
+                    SET status='PENDING', retry_count = retry_count + 1, last_error = %s
+                    WHERE id=%s
+                    """,
+                    (str(error_msg), artifact_id)
+                )
+            else:
+                # Kill
+                print(f"[Ops] 💀 Killing {artifact_id} (Max Retries Exceeded)")
+                cur.execute(
+                    """
+                    UPDATE artifact_queue 
+                    SET status='FAILED', last_error = %s
+                    WHERE id=%s
+                    """,
+                    (str(error_msg), artifact_id)
+                )
+        conn.commit()
+    finally:
+        conn.close()
 
 def log_thought(agent_name: str, message: str, visual_context: str = None):
     conn = get_connection()

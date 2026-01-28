@@ -6,16 +6,18 @@ import requests
 import hashlib
 import asyncio
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from huggingface_hub import HfApi, create_repo
 from duckduckgo_search import DDGS
+from google.genai import types
 
 from modules.db import (
     get_connection, log_thought, register_artifact, 
     save_metadata_draft, log_media_asset
 )
 from modules.browser import browser_instance
+from modules.llm_bridge import GeminiFallbackClient
 
 # Configuration
 TEMP_DOWNLOAD_DIR = "data/temp_downloads"
@@ -24,11 +26,30 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") 
 
+# Rate Limiting State
+LAST_ACCESS = {}
+DOMAIN_DELAY = 5.0 # Seconds between requests to the same domain
+
+# Initialize Intelligence for Scraping
+extraction_model = GeminiFallbackClient()
+
 # --- CLUSTER A: DISCOVERY & NAVIGATION ---
 
 async def visit_page_tool(url: str) -> str:
-    """Navigates the browser to a URL."""
+    """Navigates the browser to a URL with strict Politeness Rate Limiting."""
     try:
+        # Politeness Check
+        domain = urlparse(url).netloc
+        if domain in LAST_ACCESS:
+            elapsed = time.time() - LAST_ACCESS[domain]
+            if elapsed < DOMAIN_DELAY:
+                wait_time = DOMAIN_DELAY - elapsed
+                print(f"[Politeness] ⏳ Waiting {wait_time:.2f}s for {domain}...")
+                await asyncio.sleep(wait_time)
+        
+        # Update Lock
+        LAST_ACCESS[domain] = time.time()
+
         if not browser_instance.page: await browser_instance.launch()
         # Increased timeout for museum archives which are often slow
         await browser_instance.page.goto(url, timeout=90000, wait_until="domcontentloaded")
@@ -102,86 +123,113 @@ async def add_to_queue_tool(url: str, museum_name: str) -> str:
     register_artifact(obj_id, url, museum_name)
     return f"QUEUED: {obj_id}"
 
-# --- CLUSTER B: EXTRACTION (WITH DUBLIN CORE MAPPING) ---
+# --- CLUSTER B: COGNITIVE EXTRACTION (LLM + VISION) ---
 
-def _parse_prm(soup, url):
-    """Specialized Parser for Pitt Rivers Museum."""
-    data = {"original_url": url, "media_urls": []}
-    
-    # Title
-    title_tag = soup.find("h1", class_="page-header")
-    data["title"] = title_tag.get_text(strip=True) if title_tag else "Untitled Object"
-    
-    # Key Fields (Table Scraping) -> Mapped to Dublin Core keys locally
-    def get_field(class_name):
-        tag = soup.find("div", class_=class_name)
-        if tag:
-            item = tag.find("div", class_="field-item")
-            return item.get_text(strip=True) if item else "Unknown"
-        return "Unknown"
-
-    data["acc_num"] = get_field("field-name-field-accession-number")
-    data["subject"] = get_field("field-name-field-category") # Was 'cat'
-    data["spatial"] = get_field("field-name-field-continent") + ", " + get_field("field-name-field-country") # Was 'loc'
-    data["temporal"] = get_field("field-name-field-date") # Was 'date'
-    data["creator"] = get_field("field-name-field-collector") # Was 'author'
-    data["desc"] = soup.find("div", class_="field-name-body").get_text(strip=True) if soup.find("div", class_="field-name-body") else ""
-
-    # Multi-View Images
-    images = []
-    main_img = soup.select_one('.group-left .field-name-field-image img')
-    if main_img and main_img.get('src'):
-        images.append(urljoin(url, main_img['src']))
+async def _call_llm_extractor(contents):
+    """Helper to send content (Text or Image) to Gemini."""
+    response_text = ""
+    try:
+        async for chunk in extraction_model.generate_content_async(contents=contents):
+            if hasattr(chunk, 'text'):
+                response_text += chunk.text
+            elif hasattr(chunk, 'candidates'):
+                response_text += chunk.candidates[0].content.parts[0].text
+    except Exception as e:
+        print(f"[Tools] LLM Extraction Partial Error: {e}")
         
-    for img in soup.select(".field-name-field-other-images img"):
-        if img.get('src'):
-            images.append(urljoin(url, img['src']))
-            
-    data["media_urls"] = list(set(images))
-    return data
-
-def _parse_generic(soup, url):
-    """Fallback Parser."""
-    data = {"original_url": url, "media_urls": []}
-    
-    if soup.find("h1"): data["title"] = soup.find("h1").get_text(strip=True)
-    elif soup.title: data["title"] = soup.title.string.strip()
-    else: data["title"] = "Untitled"
-    
-    text = soup.get_text(" ", strip=True)
-    acc_match = re.search(r'(Accession|Object|Inv)[\s\.]*(No|ID)?[\s\.:]*([A-Za-z0-9\.\-\/]+)', text, re.IGNORECASE)
-    data["acc_num"] = acc_match.group(3) if acc_match else "Unknown"
-    data["desc"] = text[:2000]
-    
-    # Image Finder (Best Effort)
-    found_url = ""
-    og_img = soup.find("meta", property="og:image")
-    if og_img and og_img.get("content"):
-        found_url = og_img["content"]
-    else:
-        img_tag = soup.select_one('.main-image img, figure img')
-        if img_tag and img_tag.get('src'):
-            found_url = urljoin(url, img_tag['src'])
-            
-    if found_url:
-        data["media_urls"] = [found_url]
-        
-    return data
+    return response_text
 
 async def scrape_metadata_tool(url: str) -> str:
-    """Reads metadata using domain-specific logic."""
+    """
+    Cognitive Scraper: Uses LLM to parse HTML, with Visual Fallback.
+    """
     if not browser_instance.page: return "ERROR: Browser inactive."
+    
     try:
-        html = await browser_instance.page.content()
-        soup = BeautifulSoup(html, "html.parser")
+        # 1. Get Cleaned HTML
+        raw_html = await browser_instance.page.content()
+        soup = BeautifulSoup(raw_html, "html.parser")
         
-        if "prm.ox.ac.uk" in url:
-            data = _parse_prm(soup, url)
-        else:
-            data = _parse_generic(soup, url)
+        # Remove noise to save tokens
+        for tag in soup(['script', 'style', 'nav', 'footer', 'iframe', 'svg']):
+            tag.decompose()
+        
+        # Extract potential images for the LLM to choose from
+        img_tags = soup.find_all('img')
+        img_candidates = [urljoin(url, img['src']) for img in img_tags if img.get('src') and len(img.get('src')) > 10]
+        
+        clean_text = soup.get_text(separator='\n', strip=True)[:25000] # Limit context
+        
+        # 2. Construct Prompt for Text Extraction
+        prompt_text = f"""
+        You are a Museum Archivist. Extract the Dublin Core metadata from this webpage text.
+        
+        URL: {url}
+        IMAGE CANDIDATES: {json.dumps(img_candidates[:10])}
+        
+        PAGE TEXT:
+        {clean_text}
+        
+        INSTRUCTIONS:
+        1. Extract the following fields: 'title', 'accession_number', 'creator', 'subject' (category), 'spatial' (location), 'temporal' (date), 'desc' (description).
+        2. Identify the 'media_urls' list. Select the high-resolution object images from the candidates. Ignore icons/logos.
+        3. Return ONLY valid JSON. No markdown formatting.
+        """
+        
+        print(f"[Scraper] Attempting Text Extraction for {url}...")
+        json_response = await _call_llm_extractor([types.Part(text=prompt_text)])
+        
+        # 3. Validation & Visual Fallback
+        is_valid = False
+        data = {}
+        
+        try:
+            # Clean generic markdown block wrappers if present
+            clean_json = json_response.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_json)
             
+            # Simple validation: If title is missing or "Unknown", try vision
+            if data.get("title") and data.get("title") != "Unknown" and len(data.get("title")) > 3:
+                is_valid = True
+        except:
+            pass
+            
+        if not is_valid:
+            print(f"[Scraper] Text Extraction Weak. Engaging Gemini Vision...")
+            
+            # Take Screenshot
+            screenshot_bytes = await browser_instance.page.screenshot(type='jpeg', quality=80)
+            
+            vision_prompt = """
+            Read this museum object page. Extract the metadata as JSON.
+            Keys: title, accession_number, creator, subject, spatial, temporal, desc.
+            Also, strictly output 'media_urls': [] as an empty list (I will handle images separately).
+            Return ONLY JSON.
+            """
+            
+            vision_response = await _call_llm_extractor([
+                types.Part(text=vision_prompt),
+                types.Part(inline_data=types.Blob(mime_type="image/jpeg", data=screenshot_bytes))
+            ])
+            
+            try:
+                clean_json_vis = vision_response.replace("```json", "").replace("```", "").strip()
+                vision_data = json.loads(clean_json_vis)
+                # Merge: Prefer Vision for text, but keep Text-extracted images if any
+                vision_data["media_urls"] = data.get("media_urls", [])
+                data = vision_data
+                data["original_url"] = url # Ensure URL is present
+            except Exception as e:
+                return f"ERROR: Vision Parsing Failed - {e}"
+
+        # Ensure required keys exist
+        data["original_url"] = url
+        if "media_urls" not in data: data["media_urls"] = []
+        
         return json.dumps(data)
-    except Exception as e: return f"ERROR: {e}"
+
+    except Exception as e:
+        return f"ERROR: Critical Scraper Fail - {e}"
 
 async def save_draft_tool(artifact_id: str, metadata_json: str) -> str:
     """Saves parsed metadata to the DB (Dublin Core Mapping)."""
@@ -194,14 +242,14 @@ async def save_draft_tool(artifact_id: str, metadata_json: str) -> str:
         db_record = {
             "id": artifact_id,
             "url": data.get("original_url", ""),
-            "acc_num": data.get("acc_num", "Unknown"),
+            "acc_num": data.get("acc_num", data.get("accession_number", "Unknown")),
             "title": data.get("title", "Untitled"),
             "subject": data.get("subject", data.get("cat", "Uncategorized")),
             "creator": data.get("creator", data.get("author", "Unknown")),
             "spatial": data.get("spatial", data.get("loc", "Unknown")),
             "temporal": data.get("temporal", data.get("date", "Unknown")),
             "rights": "Unknown",
-            "desc": data.get("desc", "")
+            "desc": data.get("desc", data.get("description", ""))
         }
 
         with conn.cursor() as cur:
