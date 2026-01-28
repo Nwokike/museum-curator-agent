@@ -10,7 +10,7 @@ synthesis_model = GroqFallbackClient()  # Good instruction following for writing
 
 context_searcher_agent = Agent(
     name="ContextSearcherAgent",
-    model=research_model,
+    model=research_model.model,
     description="Researcher. Finds external information.",
     instruction="""
     ROLE: Context Researcher
@@ -31,7 +31,7 @@ context_searcher_agent = Agent(
 
 fact_extractor_agent = Agent(
     name="FactExtractorAgent",
-    model=research_model,
+    model=research_model.model,
     description="Fact Checker. Extracts verifiable quotes from noise.",
     instruction="""
     ROLE: Fact Extractor
@@ -60,7 +60,7 @@ fact_extractor_agent = Agent(
 
 synthesizer_agent = Agent(
     name="SynthesizerAgent",
-    model=synthesis_model,
+    model=synthesis_model.model,
     description="Writer. Combines visual facts and history into a cited abstract.",
     instruction="""
     ROLE: Synthesizer

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🏛️ Museum Curator Agent v2
+# 🏛️ Museum Curator Agent
 ### The Autonomous AI Archivist
 **Preserve. Analyze. Immortalize.**
 
@@ -20,8 +20,8 @@
 
 The **Museum Curator Agent** is a cloud-native, multi-agent system designed to reclaim digital heritage. Unlike simple scrapers, it uses **Cognitive RAG (Retrieval Augmented Generation)** to "see" artifacts, research their history, and write scholarly abstracts without hallucination.
 
-**Why v2.0?**
-The new architecture moves beyond linear scripts to a **Coordinator-Dispatcher** model. It features:
+**Why this architecture?**
+The system moves beyond linear scripts to a **Coordinator-Dispatcher** model. It features:
 * **Dynamic Navigation:** Browses complex AJAX museum sites like a human (clicking "Next", handling sessions).
 * **Multi-View Vision:** Captures every angle of an artifact (Front, Back, Detail), not just the thumbnail.
 * **Fact-Checked History:** A 3-stage RAG pipeline (Search -> Extract -> Synthesize) ensures historical accuracy.
@@ -111,8 +111,14 @@ We strictly adhere to archival standards to ensure interoperability.
 
 We welcome contributions! Please read `llms.txt` to understand the codebase structure before submitting a PR.
 
+## 🔄 Changelog (Self-Healing Update)
+
+*   **Fixed Startup Crash**: Resolved `Pydantic` validation errors in agent instantiation.
+*   **Session Management**: Implemented auto-creation of sessions to prevent `Session not found` errors.
+*   **Tool Robustness**: Added dummy arguments to `get_queue_metrics` to fix `litellm` tool calling failures with Llama 3 models.
+*   **Network Stability**: Increased Telegram timeouts (`read_timeout=30s`, `connect_timeout=30s`) to handle poor connectivity gracefully.
+
 ## 📄 License
 
 BSD 3-Clause License. See [LICENSE](https://www.google.com/search?q=LICENSE) for details.
-
 ```

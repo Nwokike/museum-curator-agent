@@ -9,7 +9,7 @@ ops_model = GroqFallbackClient()
 
 draft_reviewer_agent = Agent(
     name="DraftReviewerAgent",
-    model=ops_model,
+    model=ops_model.model,
     description="Liaison. Sends drafts to Telegram for human review.",
     instruction="""
     You are the Reviewer.
@@ -22,7 +22,7 @@ draft_reviewer_agent = Agent(
 
 hf_uploader_agent = Agent(
     name="HFUploaderAgent",
-    model=ops_model,
+    model=ops_model.model,
     description="Archivist. Uploads approved data to Hugging Face.",
     instruction="""
     You are the Uploader.
@@ -35,7 +35,7 @@ hf_uploader_agent = Agent(
 
 cleaner_agent = Agent(
     name="CleanerAgent",
-    model=ops_model,
+    model=ops_model.model,
     description="Janitor. Deletes temp files after upload.",
     instruction="""
     You are the Cleaner.

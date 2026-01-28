@@ -5,10 +5,13 @@ from modules.db import get_connection
 # Initialize Model
 orch_model = GroqFallbackClient()
 
-def get_queue_metrics():
+def get_queue_metrics(check_updates: bool = True):
     """
     Returns the count of artifacts in each stage of the pipeline
     and the next high-priority artifact ID for each stage.
+    
+    Args:
+        check_updates: Ignored dummy argument to ensure tool call robustness.
     """
     conn = get_connection()
     metrics = {}
@@ -40,7 +43,7 @@ def get_queue_metrics():
 
 coordinator_agent = Agent(
     name="CoordinatorAgent",
-    model=orch_model,
+    model=orch_model.model,
     description="The Chief Curator. Manages the global state and assigns tasks to specialized squads.",
     instruction="""
     You are the Chief Curator (Coordinator).
@@ -49,7 +52,7 @@ coordinator_agent = Agent(
     Maintain a smooth flow of artifacts from 'Discovery' to 'Archival'.
     
     PROTOCOL:
-    1. Call `get_queue_metrics()` to assess the backlog and identify the next actionable item.
+    1. Call `get_queue_metrics(check_updates=True)` to assess metrics.
     2. PRIORITIZE tasks strictly in this order (Downstream > Upstream):
        - PRIORITY 1 [ARCHIVAL]: If 'APPROVED' > 0, assign 'ARCHIVE_JOB' for that ID.
        - PRIORITY 2 [REVIEW]: If 'RESEARCHED' > 0, assign 'REVIEW_JOB' for that ID.

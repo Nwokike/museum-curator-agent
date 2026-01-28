@@ -13,7 +13,7 @@ scout_model = GroqFallbackClient()
 
 navigator_agent = Agent(
     name="NavigatorAgent",
-    model=scout_model,
+    model=scout_model.model,
     description="Browser Operator. Navigates pages.",
     instruction="""
     ROLE: Navigator
@@ -30,7 +30,7 @@ navigator_agent = Agent(
 
 link_extractor_agent = Agent(
     name="LinkExtractorAgent",
-    model=scout_model,
+    model=scout_model.model,
     description="HTML Analyst. Finds artifact links.",
     instruction="""
     ROLE: Link Extractor
@@ -43,7 +43,7 @@ link_extractor_agent = Agent(
 
 deduplicator_agent = Agent(
     name="DeduplicatorAgent",
-    model=scout_model,
+    model=scout_model.model,
     description="Database Gatekeeper. Checks for duplicates.",
     instruction="""
     ROLE: Deduplicator
@@ -57,7 +57,7 @@ deduplicator_agent = Agent(
 
 queue_manager_agent = Agent(
     name="QueueManagerAgent",
-    model=scout_model,
+    model=scout_model.model,
     description="Queue Clerk. Adds items to DB.",
     instruction="""
     ROLE: Queue Manager
@@ -71,7 +71,7 @@ queue_manager_agent = Agent(
 
 html_parser_agent = Agent(
     name="HTMLParserAgent",
-    model=scout_model,
+    model=scout_model.model,
     description="Metadata Scraper. Extracts text and asset URLs.",
     instruction="""
     ROLE: HTML Parser
@@ -87,7 +87,7 @@ html_parser_agent = Agent(
 
 downloader_agent = Agent(
     name="DownloaderAgent",
-    model=scout_model,
+    model=scout_model.model,
     description="Asset Manager. Downloads binary files.",
     instruction="""
     ROLE: Asset Manager

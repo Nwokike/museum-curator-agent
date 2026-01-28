@@ -5,7 +5,7 @@ import re
 from google.genai import types
 
 # Imports
-from modules.sessions import get_agent_runner
+from modules.sessions import get_agent_runner, create_session_if_needed
 from modules.db import (
     init_db, get_system_status, get_connection, 
     lock_artifact_state, handle_artifact_failure # NEW IMPORT
@@ -36,6 +36,9 @@ async def run_agent_task(agent, prompt, session_id, system_update=None):
     """
     Standard Runner (Persistent Memory).
     """
+    # Ensure session exists before running
+    await create_session_if_needed(session_id, user_id=USER_ID)
+    
     runner = get_agent_runner(agent, session_id=session_id)
     full_prompt = prompt
     if system_update:
@@ -126,7 +129,7 @@ async def task_wrapper(coro, artifact_id=None):
 # --- MAIN LOOP ---
 
 async def main():
-    print("[System] 🏛️ Museum Curator Agent v2.5 (Self-Healing) Starting...")
+    print("[System] 🏛️ Museum Curator Agent Starting...")
     init_db()
     
     # The Semaphore limits us to 5 active workers

@@ -58,7 +58,7 @@ if __name__ == '__main__':
     t = threading.Thread(target=start_worker, daemon=True)
     t.start()
     
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).connect_timeout(30).read_timeout(30).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("run", run_agent))

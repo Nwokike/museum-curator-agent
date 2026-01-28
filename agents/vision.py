@@ -7,7 +7,7 @@ vision_model = GeminiFallbackClient()
 
 visual_analyst_agent = Agent(
     name="VisualAnalystAgent",
-    model=vision_model,
+    model=vision_model.model,
     description="Visual Expert. Analyzes the physical reality of the artifact.",
     instruction="""
     You are the Visual Analyst.
