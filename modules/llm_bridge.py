@@ -15,8 +15,8 @@ class GroqFallbackClient(LiteLlm):
     Implements automatic fallback if a model is busy.
     """
     _model_names: list = PrivateAttr(default=[
-        "groq/llama-4-maverick-128e",       
-        "groq/llama-4-scout-17b-16e",       
+        "groq/meta-llama/llama-4-maverick-17b-128e-instruct",       
+        "groq/meta-llama/llama-4-scout-17b-16e-instruct",       
         "groq/llama-3.3-70b-versatile"      
     ])
     _clients: list = PrivateAttr(default=[])

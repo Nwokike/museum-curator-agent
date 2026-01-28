@@ -5,20 +5,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Neon Connection String
 DB_URL = os.getenv("DATABASE_URL")
 
 def get_connection():
-    """Establishes a connection to the Neon Postgres DB."""
     if not DB_URL:
         raise ValueError("❌ DATABASE_URL missing in .env")
     return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
 
 def init_db():
-    """
-    verifies connection to the cloud database.
-    (Tables are created via the SQL script you ran in root, so we just check access here).
-    """
     try:
         conn = get_connection()
         conn.close()
@@ -26,61 +20,104 @@ def init_db():
     except Exception as e:
         print(f"[DB] ⚠️ Connection Failed: {e}")
 
-def log_thought(agent_name: str, message: str, visual_context: str = None):
-    """
-    Writes to the Neural Feed (agent_logs).
-    Used by the Dashboard/Telegram to show what the bot is thinking.
-    """
+# --- Core Write Functions for the New Schema ---
+
+def register_artifact(id, url, museum_name):
+    """Adds a new URL to the queue (Scout)."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO agent_logs (agent_name, message, visual_context_url) 
+                INSERT INTO artifact_queue (id, url, museum_name, status) 
+                VALUES (%s, %s, %s, 'PENDING')
+                ON CONFLICT (url) DO NOTHING
+                """,
+                (id, url, museum_name)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+def save_metadata_draft(id, metadata: dict):
+    """Saves the text metadata scraped from the page (Parser)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # Upsert into archives
+            cur.execute(
+                """
+                INSERT INTO archives (
+                    id, original_url, accession_number, title, 
+                    archive_type, category, original_author, 
+                    location, date_created, circa_date, copyright_holder,
+                    description_museum
+                ) VALUES (
+                    %(id)s, %(url)s, %(acc_num)s, %(title)s, 
+                    %(type)s, %(cat)s, %(author)s, 
+                    %(loc)s, %(date)s, %(circa)s, %(copy)s, 
+                    %(desc)s
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    description_museum = EXCLUDED.description_museum,
+                    date_created = EXCLUDED.date_created
+                """,
+                metadata
+            )
+            # Update Status
+            cur.execute("UPDATE artifact_queue SET status='ANALYZED' WHERE id=%s", (id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+def log_media_asset(artifact_id, image_url, role="Primary"):
+    """Registers an image file found for an artifact."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO media_assets (artifact_id, original_image_url, role)
                 VALUES (%s, %s, %s)
                 """,
+                (artifact_id, image_url, role)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+# ... (Keep existing log_thought, get_config, save_config functions) ...
+def log_thought(agent_name: str, message: str, visual_context: str = None):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO agent_logs (agent_name, message, visual_context_url) VALUES (%s, %s, %s)",
                 (agent_name, message, visual_context)
             )
         conn.commit()
-    except Exception as e:
-        print(f"[DB Log Error] {e}")
     finally:
         conn.close()
 
-def get_config(key: str):
-    """
-    Reads from 'system_config' table. 
-    Used for the Master Switch (RUNNING/STOPPED).
-    """
+def get_system_status():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT value FROM system_config WHERE key = %s", (key,))
+            cur.execute("SELECT value FROM system_config WHERE key = 'status'")
             row = cur.fetchone()
-            return row['value'] if row else None
-    except Exception as e:
-        print(f"[DB Config Error] {e}")
-        return None
+            return row['value'] if row else 'STOPPED'
     finally:
         conn.close()
 
-def save_config(key: str, value: str):
-    """
-    Updates 'system_config'.
-    Used by Telegram/Dashboard to Start or Stop the bot.
-    """
+def set_system_status(status):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                INSERT INTO system_config (key, value) VALUES (%s, %s)
-                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-                """,
-                (key, value)
+                "INSERT INTO system_config (key, value) VALUES ('status', %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                (status,)
             )
         conn.commit()
-    except Exception as e:
-        print(f"[DB Config Save Error] {e}")
     finally:
         conn.close()
