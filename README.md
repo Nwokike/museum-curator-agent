@@ -1,111 +1,118 @@
 <div align="center">
 
-# 🏛️ Museum Curator Agent
+# 🏛️ Museum Curator Agent v2
 ### The Autonomous AI Archivist
-**Discover. Analyze. Archive.**
+**Preserve. Analyze. Immortalize.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-BSD_3--Clause-green.svg)](LICENSE)
-[![Powered By](https://img.shields.io/badge/AI-Google_ADK_%7C_Groq-purple)](https://github.com/google/project-id-here)
-[![Deploy](https://img.shields.io/badge/Deploy-Render-black)](https://render.com)
-[![Control](https://img.shields.io/badge/Control-Telegram-blue)](https://telegram.org)
+[![Framework](https://img.shields.io/badge/Agent-Google_ADK-purple)](https://github.com/google-gemini/agent-development-kit)
+[![Models](https://img.shields.io/badge/Intelligence-Gemini_Flash_%7C_Llama_4-orange)](https://deepmind.google/technologies/gemini/)
+[![Data Standard](https://img.shields.io/badge/Metadata-Dublin_Core_%7C_LIDO-yellow)](https://dublincore.org/)
 
-[Features](#-key-features) • [Architecture](#-architecture) • [Deployment](#-deployment) • [The Squad](#-the-squad)
+[Live Dataset (Hugging Face)](https://huggingface.co/datasets/nwokikeonyeka/igbo-museum-archive) • [Architecture](#-architecture) • [Deploy](#-deployment)
 
 </div>
 
 ---
 
-## 🚀 What is the Museum Curator Agent?
+## 🚀 What is this?
 
-The **Museum Curator Agent** is a cloud-native, multi-agent system designed to reclaim digital heritage. It autonomously navigates global museum collections, identifies cultural artifacts, and aggregates them into a unified, open-access archive.
+The **Museum Curator Agent** is a cloud-native, multi-agent system designed to reclaim digital heritage. Unlike simple scrapers, it uses **Cognitive RAG (Retrieval Augmented Generation)** to "see" artifacts, research their history, and write scholarly abstracts without hallucination.
 
-Unlike traditional scrapers that break when websites change, this agent uses **Computer Vision (Gemini 3 Flash)** and **Cognitive Agents (Llama 4)** to "see" and "read" museum pages like a human curator.
-
-**It runs 24/7 on the Cloud (Render) and is controlled entirely via Telegram.**
-
-> *"It doesn't just scrape. It discovers artifacts, researches their cultural context, and writes historical abstracts."*
+**Why v2.0?**
+The new architecture moves beyond linear scripts to a **Coordinator-Dispatcher** model. It features:
+* **Dynamic Navigation:** Browses complex AJAX museum sites like a human (clicking "Next", handling sessions).
+* **Multi-View Vision:** Captures every angle of an artifact (Front, Back, Detail), not just the thumbnail.
+* **Fact-Checked History:** A 3-stage RAG pipeline (Search -> Extract -> Synthesize) ensures historical accuracy.
 
 ## ✨ Key Features
 
-* **📱 Mobile Command Center**: Zero dashboards to host. Start, stop, and monitor the agent directly from **Telegram**.
-* **👁️ Cognitive Vision (SoM)**: Uses **Gemini 3 Flash** with "Set-of-Mark" tagging to extract metadata (Dimensions, Materials, Dates) from unstructured screenshots.
-* **🧠 The "Shared Brain"**: Decouples logic from memory. The agent can crash or restart, and the **Neon (Postgres)** database remembers exactly where it left off.
-* **🛡️ Free-Tier Optimized**: strict adherence to RPD (Requests Per Day) limits.
-    * *Scout:* Llama 4 (Groq) for high-volume reading.
-    * *Vision:* Gemini 3 (Google) for precision extraction.
-
-## 🛠️ The Stack
-
-| Component | Technology | Role |
+| Feature | Tech Stack | Description |
 | :--- | :--- | :--- |
-| **Framework** | **Google ADK** | Agent orchestration & Tool use |
-| **Orchestrator** | **Llama 4 Maverick** (Groq) | Decision making & Task delegation |
-| **Vision** | **Gemini 3 Flash** | Image analysis & OCR |
-| **Research** | **Gemini 2.5 Flash** | Cultural context search |
-| **Browser** | **Playwright** (Headless) | Stealth navigation |
-| **Memory** | **Neon** (Postgres) | Serverless state management |
-| **Interface** | **Telegram Bot API** | Remote control UI |
+| **Cognitive Vision** | **Gemini 3 Flash** | Analyzes image condition, materials, and iconography. |
+| **Historical RAG** | **DuckDuckGo + Gemini** | Cross-references museum metadata with global history. |
+| **Standardized Data** | **Postgres (Neon)** | Stores metadata in **Dublin Core** format (compatible with Europeana). |
+| **Public Archival** | **Hugging Face Hub** | Automatically uploads cleaned datasets for public research. |
+| **Ops Control** | **Telegram Bot** | Start, stop, and review drafts from your phone. |
 
-## 🏗️ Architecture
+## 🏗️ Architecture: The "Squad" System
 
-This project implements a **"Squad" Architecture** managed by a central Orchestrator.
+The system is controlled by a central **Coordinator Agent** that dispatches tasks to specialized squads based on real-time queue metrics.
 
-### 1. The Scout (Llama 4)
-* **Role:** The Explorer.
-* **Task:** Scans search result pages (HTML) to find deep links to specific objects.
-* **Limit:** Optimized for 30k TPM (Tokens Per Minute).
+```mermaid
+graph TD
+    A[Coordinator Agent] -->|Assigns Task| B{Priority Queue}
+    B -->|Upload| C[Archivist Squad]
+    B -->|Review| D[Reviewer Agent]
+    B -->|Analyze| E[Cognitive Squad]
+    B -->|Discover| F[Scout Squad]
+    
+    E -->|Vision| G[Gemini Vision]
+    E -->|Research| H[RAG Pipeline]
+    
+    F -->|Navigate| I[Browser Agent]
+    F -->|Parse| J[Router Parser]
 
-### 2. The Visionary (Gemini 3)
-* **Role:** The Extractor.
-* **Task:** Visits the object page, takes a screenshot, and extracts precise JSON metadata.
-* **Limit:** Conserves the 20 RPD (Requests Per Day) limit for high-value targets only.
+```
 
-### 3. The Historian (Gemini 2.5)
-* **Role:** The Researcher.
-* **Task:** Googles the object's title to find cultural context and writes a 50-word abstract.
+### The Squads
 
-## ⚡ Deployment
+1. **Scout Squad:** Handles browser automation, dynamic pagination, and robust HTML parsing.
+2. **Cognitive Squad:** Runs the RAG pipeline. It reads search results, filters for verified quotes, and synthesizes a cited description.
+3. **Archivist Squad:** Manages data integrity, cleaning, and uploading to Hugging Face.
 
-This agent is designed to run on the **Render Free Tier**.
+## ⚡ Quick Start
 
 ### Prerequisites
-* **Neon Account**: Create a free Postgres project.
-* **Telegram Bot**: Create a bot via `@BotFather`.
-* **Hugging Face Token**: For dataset uploads.
 
-### Step 1: Clone & Configure
+* Python 3.10+
+* **Neon** (Postgres) Database URL
+* **Hugging Face** Write Token
+* **Telegram** Bot Token
+
+### Installation
+
 ```bash
-git clone https://github.com/Nwokike/museum-curator-agent.git
+# 1. Clone the repo
+git clone [https://github.com/Nwokike/museum-curator-agent.git](https://github.com/Nwokike/museum-curator-agent.git)
 cd museum-curator-agent
 
-```
+# 2. Install dependencies
+pip install -r requirements.txt
+playwright install chromium
 
-### Step 2: Local Setup
-
-Create a `.env` file:
-
-```ini
-DATABASE_URL=postgres://...
-GROQ_API_KEY=gsk_...
-GEMINI_API_KEY=AIza...
-TELEGRAM_TOKEN=12345:ABC...
+# 3. Configure Environment
+cp .env.template .env
+# (Fill in your API keys)
 
 ```
 
-### Step 3: Deploy to Render
+### Running the Agent
 
-1. Create a **New Web Service**.
-2. Connect your repo.
-3. **Build Command:** `./build.sh`
-4. **Start Command:** `python bot.py`
-5. Add your Environment Variables.
+```bash
+# Run the Telegram Bot Listener
+python bot.py
 
-## 🎮 How to Use
+# In Telegram, send: /run
 
-Once deployed, open your Telegram Bot and send:
+```
 
-* `/start` - Wake up the system.
-* `/status` - Check the Queue (Pending vs. Archived).
-* `/run` - **Launch the Squad.** The agent will begin the Scout -> Vision -> Historian loop.
-* `/stop` - **Emergency Brake.** The agent finishes the current item and sleeps.
+## 📊 Data Schema (Dublin Core)
+
+We strictly adhere to archival standards to ensure interoperability.
+
+* `spatial_coverage`: Geographic origin (e.g., "Anambra, Nigeria")
+* `temporal_coverage`: Date of creation (e.g., "Circa 1904")
+* `subject`: Cultural category (e.g., "Mask; Ritual Object")
+* `rights_holder`: Owning institution.
+
+## 🤝 Contributing
+
+We welcome contributions! Please read `llms.txt` to understand the codebase structure before submitting a PR.
+
+## 📄 License
+
+BSD 3-Clause License. See [LICENSE](https://www.google.com/search?q=LICENSE) for details.
+
+```

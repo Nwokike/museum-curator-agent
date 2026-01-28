@@ -5,6 +5,7 @@ import shutil
 import requests
 import hashlib
 import asyncio
+import re
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from huggingface_hub import HfApi, create_repo
@@ -23,7 +24,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") 
 
-# --- CLUSTER A & B (Discovery & Extraction) ---
+# --- CLUSTER A: DISCOVERY & NAVIGATION ---
 
 async def visit_page_tool(url: str) -> str:
     """Navigates the browser to a URL."""
@@ -35,6 +36,36 @@ async def visit_page_tool(url: str) -> str:
         return f"SUCCESS: Visited {url}"
     except Exception as e: return f"ERROR: {e}"
 
+async def click_next_page_tool() -> str:
+    """
+    Robustly finds and clicks the 'Next' pagination button.
+    Supports standard patterns: 'Next', '>', '›', or 'rel=next'.
+    """
+    if not browser_instance.page: return "ERROR: Browser inactive."
+    page = browser_instance.page
+    try:
+        # Common Pagination Selectors
+        selectors = [
+            "a[rel='next']",
+            "text='Next'",
+            "text='next'",
+            "text='›'",
+            "text='»'",
+            ".pager-next a",
+            ".next a"
+        ]
+        
+        for sel in selectors:
+            if await page.locator(sel).first.is_visible():
+                await page.locator(sel).first.click()
+                await page.wait_for_load_state("domcontentloaded")
+                await asyncio.sleep(3) # Politeness wait
+                return f"SUCCESS: Navigated to {page.url}"
+                
+        return "END_OF_ARCHIVE: No next button found."
+    except Exception as e:
+        return f"ERROR: Navigation failed - {e}"
+
 async def extract_links_tool(base_url: str, selector: str = "a") -> str:
     """Finds artifact links, strictly filtering out nav/noise."""
     if not browser_instance.page: return "ERROR: Browser inactive."
@@ -43,16 +74,12 @@ async def extract_links_tool(base_url: str, selector: str = "a") -> str:
         soup = BeautifulSoup(html, "html.parser")
         links = [urljoin(base_url, a['href']) for a in soup.select(selector) if a.get('href')]
         
-        # --- NEW: Strict Noise Filter ---
-        # Archives like PRM have specific URL patterns for objects (e.g., /collection-object/)
-        # We filter OUT generic pages.
+        # Strict Noise Filter
         valid_links = []
         for l in list(set(links)):
-            if "search" in l or "login" in l or "user" in l: continue
-            if l.endswith("/collections") or l.endswith("/about"): continue
+            if any(x in l for x in ["search", "login", "user", "contact", "about", "policy"]): continue
             # Heuristic: Object pages often have numbers or specific keywords
-            # For PRM: /collection-object/
-            if "collection-object" in l or "objects" in l or "item" in l:
+            if any(x in l for x in ["collection-object", "objects", "item", "record"]):
                 valid_links.append(l)
         
         return json.dumps(valid_links[:20]) # Limit batch size
@@ -75,65 +102,133 @@ async def add_to_queue_tool(url: str, museum_name: str) -> str:
     register_artifact(obj_id, url, museum_name)
     return f"QUEUED: {obj_id}"
 
+# --- CLUSTER B: EXTRACTION (WITH DUBLIN CORE MAPPING) ---
+
+def _parse_prm(soup, url):
+    """Specialized Parser for Pitt Rivers Museum."""
+    data = {"original_url": url, "media_urls": []}
+    
+    # Title
+    title_tag = soup.find("h1", class_="page-header")
+    data["title"] = title_tag.get_text(strip=True) if title_tag else "Untitled Object"
+    
+    # Key Fields (Table Scraping) -> Mapped to Dublin Core keys locally
+    def get_field(class_name):
+        tag = soup.find("div", class_=class_name)
+        if tag:
+            item = tag.find("div", class_="field-item")
+            return item.get_text(strip=True) if item else "Unknown"
+        return "Unknown"
+
+    data["acc_num"] = get_field("field-name-field-accession-number")
+    data["subject"] = get_field("field-name-field-category") # Was 'cat'
+    data["spatial"] = get_field("field-name-field-continent") + ", " + get_field("field-name-field-country") # Was 'loc'
+    data["temporal"] = get_field("field-name-field-date") # Was 'date'
+    data["creator"] = get_field("field-name-field-collector") # Was 'author'
+    data["desc"] = soup.find("div", class_="field-name-body").get_text(strip=True) if soup.find("div", class_="field-name-body") else ""
+
+    # Multi-View Images
+    images = []
+    main_img = soup.select_one('.group-left .field-name-field-image img')
+    if main_img and main_img.get('src'):
+        images.append(urljoin(url, main_img['src']))
+        
+    for img in soup.select(".field-name-field-other-images img"):
+        if img.get('src'):
+            images.append(urljoin(url, img['src']))
+            
+    data["media_urls"] = list(set(images))
+    return data
+
+def _parse_generic(soup, url):
+    """Fallback Parser."""
+    data = {"original_url": url, "media_urls": []}
+    
+    if soup.find("h1"): data["title"] = soup.find("h1").get_text(strip=True)
+    elif soup.title: data["title"] = soup.title.string.strip()
+    else: data["title"] = "Untitled"
+    
+    text = soup.get_text(" ", strip=True)
+    acc_match = re.search(r'(Accession|Object|Inv)[\s\.]*(No|ID)?[\s\.:]*([A-Za-z0-9\.\-\/]+)', text, re.IGNORECASE)
+    data["acc_num"] = acc_match.group(3) if acc_match else "Unknown"
+    data["desc"] = text[:2000]
+    
+    # Image Finder (Best Effort)
+    found_url = ""
+    og_img = soup.find("meta", property="og:image")
+    if og_img and og_img.get("content"):
+        found_url = og_img["content"]
+    else:
+        img_tag = soup.select_one('.main-image img, figure img')
+        if img_tag and img_tag.get('src'):
+            found_url = urljoin(url, img_tag['src'])
+            
+    if found_url:
+        data["media_urls"] = [found_url]
+        
+    return data
+
 async def scrape_metadata_tool(url: str) -> str:
-    """Reads Title, ID, Date, and Image URL from the HTML."""
+    """Reads metadata using domain-specific logic."""
     if not browser_instance.page: return "ERROR: Browser inactive."
     try:
         html = await browser_instance.page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        # Heuristics
-        title = "Untitled"
-        if soup.find("h1"): title = soup.find("h1").get_text(strip=True)
-        elif soup.title: title = soup.title.string.strip()
-        
-        text = soup.get_text(" ", strip=True)
-        # Regex for Accession Numbers (e.g., 1904.23.1)
-        import re
-        acc_match = re.search(r'(Accession|Object|Inv)[\s\.]*(No|ID)?[\s\.:]*([A-Za-z0-9\.\-\/]+)', text, re.IGNORECASE)
-        acc = acc_match.group(3) if acc_match else "Unknown"
-        
-        # --- NEW: Smarter Image Extraction ---
-        found_image_url = ""
-        
-        # 1. Try OpenGraph (Best for social sharing, usually high quality)
-        og_img = soup.find("meta", property="og:image")
-        if og_img and og_img.get("content"):
-            found_image_url = og_img["content"]
-        
-        # 2. If no OG, try common CMS classes
-        if not found_image_url:
-            # Look for zoom/lightbox links which usually point to the high-res file
-            zoom_link = soup.select_one('a.lightbox, a.fancybox, .zoom-link')
-            if zoom_link and zoom_link.get('href'):
-                found_image_url = urljoin(url, zoom_link['href'])
+        if "prm.ox.ac.uk" in url:
+            data = _parse_prm(soup, url)
+        else:
+            data = _parse_generic(soup, url)
             
-            # Fallback to main image tag
-            else:
-                img_tag = soup.select_one('.main-image img, .field-name-field-image img, figure img')
-                if img_tag and img_tag.get('src'):
-                    found_image_url = urljoin(url, img_tag['src'])
-        
-        return json.dumps({
-            "title": title,
-            "accession_number": acc,
-            "description_museum": text[:2000],
-            "original_url": url,
-            "found_image_url": found_image_url
-        })
+        return json.dumps(data)
     except Exception as e: return f"ERROR: {e}"
 
 async def save_draft_tool(artifact_id: str, metadata_json: str) -> str:
-    """Saves parsed metadata to the DB."""
+    """Saves parsed metadata to the DB (Dublin Core Mapping)."""
+    conn = get_connection()
     try:
         data = json.loads(metadata_json)
-        data['id'] = artifact_id
+        
+        # MAPPING: Scraper Keys -> DB Columns (Dublin Core)
         # Defaults
-        for k in ['acc_num', 'type', 'cat', 'author', 'loc', 'date', 'circa', 'copy', 'desc']:
-            if k not in data: data[k] = "Unknown"
-        save_metadata_draft(artifact_id, data)
+        db_record = {
+            "id": artifact_id,
+            "url": data.get("original_url", ""),
+            "acc_num": data.get("acc_num", "Unknown"),
+            "title": data.get("title", "Untitled"),
+            "subject": data.get("subject", data.get("cat", "Uncategorized")),
+            "creator": data.get("creator", data.get("author", "Unknown")),
+            "spatial": data.get("spatial", data.get("loc", "Unknown")),
+            "temporal": data.get("temporal", data.get("date", "Unknown")),
+            "rights": "Unknown",
+            "desc": data.get("desc", "")
+        }
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO archives (
+                    id, original_url, accession_number, title, 
+                    subject, creator, spatial_coverage, temporal_coverage, 
+                    rights_holder, description_museum
+                ) VALUES (
+                    %(id)s, %(url)s, %(acc_num)s, %(title)s, 
+                    %(subject)s, %(creator)s, %(spatial)s, %(temporal)s, 
+                    %(rights)s, %(desc)s
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    description_museum = EXCLUDED.description_museum
+                """,
+                db_record
+            )
+            # We don't change status to ANALYZED yet, wait for images
+        conn.commit()
         return "SUCCESS: Draft Saved."
-    except Exception as e: return f"ERROR: {e}"
+    except Exception as e: 
+        return f"ERROR: {e}"
+    finally:
+        conn.close()
 
 async def download_image_tool(image_url: str, artifact_id: str) -> str:
     """Downloads the raw image file."""
@@ -146,7 +241,9 @@ async def download_image_tool(image_url: str, artifact_id: str) -> str:
         ext = ".jpg"
         if "png" in r.headers.get("Content-Type", ""): ext = ".png"
         
-        filename = f"{artifact_id}_{int(time.time())}{ext}"
+        # Unique filename for multi-image support
+        file_hash = hashlib.md5(image_url.encode()).hexdigest()[:6]
+        filename = f"{artifact_id}_{file_hash}{ext}"
         filepath = os.path.join(TEMP_DOWNLOAD_DIR, filename)
         
         with open(filepath, "wb") as f:
@@ -159,12 +256,12 @@ async def download_image_tool(image_url: str, artifact_id: str) -> str:
 # --- CLUSTER C (Vision) ---
 
 async def analyze_image_tool(artifact_id: str) -> str:
-    """Finds the local file for Vision Analysis."""
+    """Finds ALL local files for Vision Analysis (Multi-View)."""
     files = [f for f in os.listdir(TEMP_DOWNLOAD_DIR) if f.startswith(artifact_id)]
-    if not files: return "ERROR: No downloaded image found."
+    if not files: return "ERROR: No downloaded images found."
     
-    file_path = os.path.join(TEMP_DOWNLOAD_DIR, files[0])
-    return json.dumps({"action": "analyze", "file_path": file_path})
+    file_paths = [os.path.join(TEMP_DOWNLOAD_DIR, f) for f in files]
+    return json.dumps({"action": "analyze", "file_paths": file_paths})
 
 async def save_visual_analysis_tool(artifact_id: str, analysis: str) -> str:
     """Updates the media_assets table."""

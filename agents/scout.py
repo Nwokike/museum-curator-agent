@@ -1,11 +1,12 @@
 from google.adk.agents import Agent
 from modules.llm_bridge import GroqFallbackClient
 from agents.tools import (
-    visit_page_tool, extract_links_tool, check_db_tool, add_to_queue_tool,
-    scrape_metadata_tool, download_image_tool, save_draft_tool
+    visit_page_tool, click_next_page_tool, extract_links_tool, 
+    check_db_tool, add_to_queue_tool, scrape_metadata_tool, 
+    download_image_tool, save_draft_tool
 )
 
-# Shared Model (Llama 4 / Groq)
+# Shared Model
 scout_model = GroqFallbackClient()
 
 # --- Cluster A: Discovery Squad ---
@@ -13,14 +14,18 @@ scout_model = GroqFallbackClient()
 navigator_agent = Agent(
     name="NavigatorAgent",
     model=scout_model,
-    description="Browser Operator. Navigates to URLs.",
+    description="Browser Operator. Navigates pages.",
     instruction="""
-    You are the Navigator.
-    1. Receive a URL.
-    2. Call `visit_page_tool(url)`.
-    3. Return the tool output.
+    ROLE: Navigator
+    TASK: Manage Browser Location.
+    
+    COMMANDS:
+    1. If instruction is "GOTO [URL]": Call `visit_page_tool(url)`.
+    2. If instruction is "NEXT PAGE": Call `click_next_page_tool()`.
+    
+    OUTPUT: Return the tool result status.
     """,
-    tools=[visit_page_tool]
+    tools=[visit_page_tool, click_next_page_tool]
 )
 
 link_extractor_agent = Agent(
@@ -28,10 +33,10 @@ link_extractor_agent = Agent(
     model=scout_model,
     description="HTML Analyst. Finds artifact links.",
     instruction="""
-    You are the Link Extractor.
-    1. You are on a search result page.
-    2. Call `extract_links_tool` with the base URL.
-    3. Return the JSON list of links found.
+    ROLE: Link Extractor
+    TASK: Scan the current page for object hyperlinks.
+    ACTION: Call `extract_links_tool(base_url)`.
+    OUTPUT: JSON list of links.
     """,
     tools=[extract_links_tool]
 )
@@ -41,11 +46,11 @@ deduplicator_agent = Agent(
     model=scout_model,
     description="Database Gatekeeper. Checks for duplicates.",
     instruction="""
-    You are the Deduplicator.
-    1. Receive a list of URLs.
-    2. For each URL, call `check_db_tool`.
-    3. If result is 'NEW', return the URL.
-    4. Ignore 'EXISTS'.
+    ROLE: Deduplicator
+    TASK: Filter a list of URLs against the database.
+    ACTION: 
+    1. For each URL in the list, call `check_db_tool(url)`.
+    2. Return ONLY the URLs that return 'NEW'.
     """,
     tools=[check_db_tool]
 )
@@ -55,10 +60,9 @@ queue_manager_agent = Agent(
     model=scout_model,
     description="Queue Clerk. Adds items to DB.",
     instruction="""
-    You are the Queue Manager.
-    1. Receive a new URL and a Museum Name.
-    2. Call `add_to_queue_tool`.
-    3. Return the new Artifact ID.
+    ROLE: Queue Manager
+    TASK: Register new artifacts.
+    ACTION: Call `add_to_queue_tool(url, museum_name)` for every valid URL provided.
     """,
     tools=[add_to_queue_tool]
 )
@@ -68,12 +72,15 @@ queue_manager_agent = Agent(
 html_parser_agent = Agent(
     name="HTMLParserAgent",
     model=scout_model,
-    description="Metadata Scraper. Reads text from page.",
+    description="Metadata Scraper. Extracts text and asset URLs.",
     instruction="""
-    You are the HTML Parser.
+    ROLE: HTML Parser
+    TASK: Extract metadata and identify ALL High-Res Image URLs.
+    ACTION: 
     1. Call `scrape_metadata_tool(url)`.
-    2. Review the JSON. Identify the Accession Number, Title, and Description.
-    3. Call `save_draft_tool` to save it to the DB.
+    2. ANALYZE the JSON output. 
+    3. Call `save_draft_tool(artifact_id, metadata_json)`.
+    4. CRITICAL: Output the `media_urls` list explicitly for the next agent.
     """,
     tools=[scrape_metadata_tool, save_draft_tool]
 )
@@ -81,14 +88,13 @@ html_parser_agent = Agent(
 downloader_agent = Agent(
     name="DownloaderAgent",
     model=scout_model,
-    description="Asset Manager. Downloads high-res files.",
+    description="Asset Manager. Downloads binary files.",
     instruction="""
-    You are the Downloader.
-    1. You need to find the image URL on the page (scrape or regex).
-    2. Call `download_image_tool(image_url, artifact_id)`.
-    3. Ensure the file is saved successfully.
+    ROLE: Asset Manager
+    TASK: Download the image file to local storage.
+    INPUT: `image_url` and `artifact_id`.
+    ACTION: Call `download_image_tool(image_url, artifact_id)`.
+    NOTE: Do not search for the URL. It must be provided to you.
     """,
-    # Note: We rely on the model's logic or an extra tool to FIND the image src from the HTML. 
-    # For now, we assume the HTMLParser passes the image URL or we add a specific 'find_image_src' tool later.
-    tools=[download_image_tool] 
+    tools=[download_image_tool]
 )

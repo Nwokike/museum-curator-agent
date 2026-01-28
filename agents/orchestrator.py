@@ -7,43 +7,64 @@ orch_model = GroqFallbackClient()
 
 def get_queue_metrics():
     """
-    Returns the count of artifacts in each stage of the pipeline.
+    Returns the count of artifacts in each stage of the pipeline
+    and the next high-priority artifact ID for each stage.
     """
     conn = get_connection()
+    metrics = {}
+    next_tasks = {}
+    
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT status, COUNT(*) 
-                FROM artifact_queue 
-                GROUP BY status
-            """)
+            # Get Counts
+            cur.execute("SELECT status, COUNT(*) FROM artifact_queue GROUP BY status")
             rows = dict(cur.fetchall())
-            
-            return {
+            metrics = {
                 "PENDING": rows.get("PENDING", 0),       # Needs Extraction
                 "EXTRACTED": rows.get("EXTRACTED", 0),   # Needs Vision/Research
                 "RESEARCHED": rows.get("RESEARCHED", 0), # Needs Review
                 "APPROVED": rows.get("APPROVED", 0),     # Needs Upload
                 "ARCHIVED": rows.get("ARCHIVED", 0)
             }
+            
+            # Get Next Priorities
+            for status in ["APPROVED", "RESEARCHED", "EXTRACTED", "PENDING"]:
+                cur.execute("SELECT id, url, museum_name FROM artifact_queue WHERE status = %s ORDER BY created_at ASC LIMIT 1", (status,))
+                item = cur.fetchone()
+                if item:
+                    next_tasks[status] = item
+                    
+            return {"metrics": metrics, "next_task": next_tasks}
     finally:
         conn.close()
 
-orchestrator_agent = Agent(
-    name="CuratorCore",
+coordinator_agent = Agent(
+    name="CoordinatorAgent",
     model=orch_model,
-    description="Pipeline Manager. Decides the next system task.",
+    description="The Chief Curator. Manages the global state and assigns tasks to specialized squads.",
     instruction="""
-    You are the Curator Core.
-    1. Call `get_queue_metrics` to see the backlog.
-    2. PRIORITIZE tasks in this order:
-       - IF "APPROVED" > 0  -> Return "TASK: ARCHIVE".
-       - IF "RESEARCHED" > 0 -> Return "TASK: REVIEW".
-       - IF "EXTRACTED" > 0 -> Return "TASK: ANALYZE".
-       - IF "PENDING" > 0   -> Return "TASK: EXTRACT".
-       - ELSE               -> Return "TASK: DISCOVER".
+    You are the Chief Curator (Coordinator).
     
-    Return ONLY the Task String.
+    YOUR GOAL: 
+    Maintain a smooth flow of artifacts from 'Discovery' to 'Archival'.
+    
+    PROTOCOL:
+    1. Call `get_queue_metrics()` to assess the backlog and identify the next actionable item.
+    2. PRIORITIZE tasks strictly in this order (Downstream > Upstream):
+       - PRIORITY 1 [ARCHIVAL]: If 'APPROVED' > 0, assign 'ARCHIVE_JOB' for that ID.
+       - PRIORITY 2 [REVIEW]: If 'RESEARCHED' > 0, assign 'REVIEW_JOB' for that ID.
+       - PRIORITY 3 [ANALYSIS]: If 'EXTRACTED' > 0, assign 'ANALYZE_JOB' for that ID.
+       - PRIORITY 4 [EXTRACTION]: If 'PENDING' > 0, assign 'EXTRACT_JOB' for that ID (and its URL).
+       - PRIORITY 5 [DISCOVERY]: If queues are empty, assign 'DISCOVER_JOB'.
+       
+    OUTPUT FORMAT (JSON):
+    Return a valid JSON object defining the assignment:
+    {
+        "action": "ARCHIVE_JOB" | "REVIEW_JOB" | "ANALYZE_JOB" | "EXTRACT_JOB" | "DISCOVER_JOB" | "SLEEP",
+        "target_id": "PRM_12345" or null,
+        "context": { "url": "..." } or null,
+        "reasoning": "Brief explanation of why this task was chosen."
+    }
     """,
     tools=[get_queue_metrics]
 )

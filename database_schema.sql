@@ -16,43 +16,41 @@ CREATE TABLE IF NOT EXISTS artifact_queue (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- 3. The Master Archive Record (The Metadata)
+-- 3. The Master Archive Record (Dublin Core Standard)
 CREATE TABLE IF NOT EXISTS archives (
     id TEXT PRIMARY KEY REFERENCES artifact_queue(id),
     
-    -- Identity
+    -- Identity & Rights (DC: Identifier, Rights)
     accession_number TEXT,            
     original_url TEXT NOT NULL,       
-    copyright_holder TEXT,            
+    rights_holder TEXT,               -- Was: copyright_holder
     
-    -- Classification
+    -- Description (DC: Title, Type, Subject)
     title TEXT,
-    archive_type TEXT DEFAULT 'Image', 
-    category TEXT,                    
+    type TEXT DEFAULT 'Physical Object', 
+    subject TEXT,                     -- Was: category
     
-    -- Provenance & History
-    original_author TEXT,             
-    location TEXT,                    
-    date_created TEXT,                
-    circa_date TEXT,                  
+    -- Provenance (DC: Creator, Spatial, Temporal)
+    creator TEXT,                     -- Was: original_author (e.g., Field Collector)
+    spatial_coverage TEXT,            -- Was: location (e.g., "Igboland, Nigeria")
+    temporal_coverage TEXT,           -- Was: date_created (e.g., "1904-1910")
     
-    -- Descriptions
-    description_museum TEXT,          
-    description_ai TEXT,              
+    -- Content (DC: Description)
+    description_museum TEXT,          -- Raw museum text
+    description_ai TEXT,              -- Synthesized Abstract
     
-    -- External Links
-    hf_dataset_url TEXT,              
+    -- Management
     posted_to_socials BOOLEAN DEFAULT FALSE,
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- 4. Media Assets (Multi-Image Support)
+-- 4. Media Assets (Multi-View Support)
 CREATE TABLE IF NOT EXISTS media_assets (
     id SERIAL PRIMARY KEY,
     artifact_id TEXT REFERENCES archives(id) ON DELETE CASCADE,
     original_image_url TEXT,          
     file_type TEXT,                   
-    role TEXT DEFAULT 'Primary',      
+    role TEXT DEFAULT 'Primary',      -- 'Primary', 'Detail', 'Verso'
     hf_path TEXT,                     
     visual_analysis_raw TEXT,         
     created_at TIMESTAMP DEFAULT NOW()
@@ -74,11 +72,11 @@ CREATE TABLE IF NOT EXISTS telegram_state (
     last_update TIMESTAMP DEFAULT NOW()
 );
 
--- 7. Discovery State (The "Bookmark")
+-- 7. Discovery State (Browser Context)
 CREATE TABLE IF NOT EXISTS discovery_state (
     source_name TEXT PRIMARY KEY,     
     last_page_scraped INT DEFAULT 0,
-    total_pages_found INT DEFAULT 0,
+    current_search_url TEXT,          
     is_finished BOOLEAN DEFAULT FALSE,
     updated_at TIMESTAMP DEFAULT NOW()
 );

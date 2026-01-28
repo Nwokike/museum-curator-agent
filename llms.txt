@@ -1,0 +1,34 @@
+# Museum Curator Agent Project Context
+## Project Overview
+This is a Python-based multi-agent system built with the Google Agent Development Kit (ADK). It automates the discovery, analysis, and archiving of museum artifacts.
+
+## Key Architectures
+- **Dispatcher Pattern**: `main.py` runs a loop that consults `agents/orchestrator.py` (CoordinatorAgent) to decide the next action based on DB state.
+- **RAG Pipeline**: `agents/historian.py` implements a 3-step loop: ContextSearcher -> FactExtractor -> Synthesizer.
+- **Router Parser**: `agents/tools.py` contains specific scraping logic for different domains (e.g., `_parse_prm` for Pitt Rivers).
+
+## Directory Structure
+- `/agents`: Contains ADK Agent definitions.
+  - `orchestrator.py`: The brain. Decides priorities.
+  - `scout.py`: Handles browsing and parsing.
+  - `historian.py`: Handles RAG and text synthesis.
+  - `vision.py`: Handles image analysis.
+  - `tools.py`: The actual Python functions (Playwright, Requests, DB calls).
+- `/modules`: Core infrastructure.
+  - `db.py`: Postgres connection and schema management.
+  - `browser.py`: Singleton Playwright instance.
+  - `llm_bridge.py`: Wrappers for Groq/Gemini APIs.
+- `main.py`: The entry point and event loop.
+- `database_schema.sql`: The Dublin Core Postgres schema.
+
+## Data Flow
+1. **Discovery**: NavigatorAgent browses -> LinkExtractor finds URLs -> QueueManager saves to `artifact_queue` (PENDING).
+2. **Extraction**: HTMLParser scrapes metadata -> Downloader saves images -> Status updates to EXTRACTED.
+3. **Analysis**: VisualAnalyst reads images + ContextSearcher finds history -> Synthesizer writes description -> Status updates to RESEARCHED.
+4. **Review**: Human approves via Telegram -> Status updates to APPROVED.
+5. **Archival**: HFUploader pushes to Hugging Face -> Cleaner removes local files -> Status updates to ARCHIVED.
+
+## Style Guide
+- Use `async/await` for all IO tools.
+- All database cursors must be context managers (`with conn.cursor() as cur:`).
+- Citations in `historian.py` must follow `[Source]` format.
