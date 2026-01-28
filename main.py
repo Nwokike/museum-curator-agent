@@ -8,8 +8,8 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 # Import The Squads
-from agents.orchestrator import orchestrator_agent
-# Cluster A: Discovery
+from agents.orchestrator import get_queue_metrics # Only extracting the metric function
+# Cluster A: Discovery (Replaced by Logic)
 from agents.scout import navigator_agent, link_extractor_agent, deduplicator_agent, queue_manager_agent
 # Cluster B: Extraction
 from agents.scout import html_parser_agent, downloader_agent
@@ -21,7 +21,7 @@ from agents.historian import context_searcher_agent, synthesizer_agent
 from agents.archivist import draft_reviewer_agent, hf_uploader_agent, cleaner_agent
 
 # Utilities
-from modules.db import init_db, get_system_status, get_connection, log_thought
+from modules.db import init_db, get_system_status, get_connection, get_discovery_state, update_discovery_state
 
 USER_ID = "admin"
 APP_NAME = "IgboCurator"
@@ -57,9 +57,8 @@ async def fetch_job(status):
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id, url, title, location FROM artifact_queue JOIN archives USING(id) WHERE artifact_queue.status = %s LIMIT 1", (status,))
-            return cur.fetchone() # Returns dict or None
+            return cur.fetchone() 
     except:
-        # Fallback for PENDING which might not have archive entry yet
         with conn.cursor() as cur:
             cur.execute("SELECT id, url FROM artifact_queue WHERE status = %s LIMIT 1", (status,))
             return cur.fetchone()
@@ -70,6 +69,8 @@ async def main():
     print("[System] 🏛️ Museum Curator Agent Starting...")
     init_db()
 
+    SOURCE_NAME = "PRM_Igbo" # Hardcoded for this run, could be config
+    
     while True:
         try:
             # 1. Master Switch
@@ -77,25 +78,56 @@ async def main():
                 await asyncio.sleep(5)
                 continue
 
-            # 2. Orchestrator Decision
-            decision = await run_adk(orchestrator_agent, "Decide next task.", "orch")
-            print(f"[Orchestrator] {decision}")
+            # 2. Deterministic Orchestration (No LLM Cost)
+            metrics = get_queue_metrics()
+            print(f"[Orchestrator] Status: {metrics}")
 
-            # --- ROUTING LOGIC ---
+            # --- PRIORITY 1: ARCHIVE (Finish the Job) ---
+            if metrics["APPROVED"] > 0:
+                item = await fetch_job("APPROVED")
+                if item:
+                    print(f"[Archive] Uploading {item['id']}...")
+                    await run_adk(hf_uploader_agent, f"Upload {item['id']}", "up")
+                    await run_adk(cleaner_agent, f"Clean {item['id']}", "clean")
 
-            if "TASK: DISCOVER" in decision:
-                # --- FIXED: Random Pagination ---
-                page_num = random.randint(0, 50) 
-                target = f"https://www.prm.ox.ac.uk/search/all?search_api_fulltext=Igbo&page={page_num}"
-                
-                # 1. Navigate
-                await run_adk(navigator_agent, f"Visit {target}", "nav")
-                # 2. Extract
-                links_json = await run_adk(link_extractor_agent, f"Extract links from {target}", "extract")
-                # 3. Deduplicate & Queue 
-                await run_adk(queue_manager_agent, f"Queue these links: {links_json}. Museum: Pitt Rivers.", "queue")
+            # --- PRIORITY 2: REVIEW (Human in the Loop) ---
+            elif metrics["RESEARCHED"] > 0:
+                item = await fetch_job("RESEARCHED")
+                if item:
+                    print(f"[Review] Sending {item['id']} to Telegram...")
+                    await run_adk(draft_reviewer_agent, f"Send review for {item['id']}", "rev")
+                    # Update status manually to prevent loop
+                    conn = get_connection()
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE artifact_queue SET status='REVIEW_PENDING' WHERE id=%s", (item['id'],))
+                    conn.commit()
+                    conn.close()
 
-            elif "TASK: EXTRACT" in decision:
+            # --- PRIORITY 3: ANALYZE (The "Smart" Agents) ---
+            elif metrics["EXTRACTED"] > 0:
+                item = await fetch_job("EXTRACTED")
+                if item:
+                    uid = item['id']
+                    print(f"[Vision] Analyzing {uid}...")
+                    
+                    # 1. Visual Analysis (Gemini)
+                    visual_facts = await run_adk(visual_analyst_agent, f"Analyze artifact {uid}", "vis")
+                    
+                    # 2. Historical Research (Gemini)
+                    conn = get_connection()
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT title, location FROM archives WHERE id=%s", (uid,))
+                        row = cur.fetchone()
+                    conn.close()
+                    
+                    context = await run_adk(context_searcher_agent, f"Research '{row['title']}' in '{row['location']}'", "res")
+                    
+                    # 3. Synthesis (Llama/Gemini)
+                    prompt = f"Synthesize Description.\nVisuals: {visual_facts}\nContext: {context}\nMetadata: {row['title']}"
+                    await run_adk(synthesizer_agent, prompt, "syn")
+
+            # --- PRIORITY 4: EXTRACT (The Scraper) ---
+            elif metrics["PENDING"] > 0:
                 item = await fetch_job("PENDING")
                 if item:
                     uid, url = item['id'], item['url']
@@ -104,12 +136,9 @@ async def main():
                     # 1. Parse Metadata
                     metadata_response = await run_adk(html_parser_agent, f"Scrape metadata from {url}", "parser")
                     
-                    # --- FIXED: Logic to find Image URL ---
+                    # 2. Find Image URL
                     img_url = None
                     try:
-                        # Attempt to parse the JSON returned by the scraper tool
-                        # Note: The agent might wrap the JSON in text, so this is a basic extraction attempt
-                        # A more robust regex might be needed depending on model verbosity
                         json_match = re.search(r'\{.*\}', metadata_response, re.DOTALL)
                         if json_match:
                             meta_data = json.loads(json_match.group(0))
@@ -117,11 +146,10 @@ async def main():
                     except Exception as e:
                         print(f"[System] Metadata parse warning: {e}")
 
-                    # 2. Download Image (Only if we found one)
+                    # 3. Download
                     if img_url:
                         await run_adk(downloader_agent, f"Download image from {img_url} for ID {uid}", "down")
                         
-                        # Manually advance state to EXTRACTED if agents succeeded
                         conn = get_connection()
                         with conn.cursor() as cur:
                             cur.execute("UPDATE artifact_queue SET status='EXTRACTED' WHERE id=%s", (uid,))
@@ -135,45 +163,35 @@ async def main():
                         conn.commit()
                         conn.close()
 
-            elif "TASK: ANALYZE" in decision:
-                item = await fetch_job("EXTRACTED")
-                if item:
-                    uid = item['id']
-                    print(f"[Vision] Analyzing {uid}...")
-                    # 1. Visual Analysis
-                    visual_facts = await run_adk(visual_analyst_agent, f"Analyze artifact {uid}", "vis")
-                    
-                    # 2. Historical Research
-                    conn = get_connection()
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT title, location FROM archives WHERE id=%s", (uid,))
-                        row = cur.fetchone()
-                    conn.close()
-                    
-                    context = await run_adk(context_searcher_agent, f"Research '{row['title']}' in '{row['location']}'", "res")
-                    
-                    # 3. Synthesis (Deep Description)
-                    prompt = f"Synthesize Description.\nVisuals: {visual_facts}\nContext: {context}\nMetadata: {row['title']}"
-                    await run_adk(synthesizer_agent, prompt, "syn")
-
-            elif "TASK: REVIEW" in decision:
-                item = await fetch_job("RESEARCHED")
-                if item:
-                    print(f"[Review] Sending {item['id']} to Telegram...")
-                    await run_adk(draft_reviewer_agent, f"Send review for {item['id']}", "rev")
-                    # Update status to avoid spamming
-                    conn = get_connection()
-                    with conn.cursor() as cur:
-                        cur.execute("UPDATE artifact_queue SET status='REVIEW_PENDING' WHERE id=%s", (item['id'],))
-                    conn.commit()
-                    conn.close()
-
-            elif "TASK: ARCHIVE" in decision:
-                item = await fetch_job("APPROVED")
-                if item:
-                    print(f"[Archive] Uploading {item['id']}...")
-                    await run_adk(hf_uploader_agent, f"Upload {item['id']}", "up")
-                    await run_adk(cleaner_agent, f"Clean {item['id']}", "clean")
+            # --- PRIORITY 5: DISCOVER (The Crawler) ---
+            else:
+                # Deterministic Pagination
+                last_page = get_discovery_state(SOURCE_NAME)
+                next_page = last_page + 1
+                
+                print(f"[Discovery] No tasks in queue. Scraping Page {next_page}...")
+                
+                # PRM Specific URL Construction
+                target = f"https://www.prm.ox.ac.uk/search/all?search_api_fulltext=Igbo&page={next_page}"
+                
+                # 1. Navigate
+                await run_adk(navigator_agent, f"Visit {target}", "nav")
+                
+                # 2. Extract Links
+                links_json_str = await run_adk(link_extractor_agent, f"Extract links from {target}", "extract")
+                
+                # 3. Queue Logic
+                try:
+                    links = json.loads(links_json_str)
+                    if links:
+                        print(f"[Discovery] Found {len(links)} items on page {next_page}.")
+                        await run_adk(queue_manager_agent, f"Queue these links: {links_json_str}. Museum: Pitt Rivers.", "queue")
+                        update_discovery_state(SOURCE_NAME, next_page)
+                    else:
+                        print(f"[Discovery] Page {next_page} returned no links. End of Archive?")
+                        await asyncio.sleep(60) # Backoff if empty
+                except Exception as e:
+                    print(f"[Discovery] Failed to parse links: {e}")
 
             await asyncio.sleep(5)
 

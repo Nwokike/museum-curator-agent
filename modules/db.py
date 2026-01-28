@@ -20,10 +20,9 @@ def init_db():
     except Exception as e:
         print(f"[DB] ⚠️ Connection Failed: {e}")
 
-# --- Core Write Functions for the New Schema ---
+# --- Core Write Functions ---
 
 def register_artifact(id, url, museum_name):
-    """Adds a new URL to the queue (Scout)."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -40,11 +39,9 @@ def register_artifact(id, url, museum_name):
         conn.close()
 
 def save_metadata_draft(id, metadata: dict):
-    """Saves the text metadata scraped from the page (Parser)."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            # Upsert into archives
             cur.execute(
                 """
                 INSERT INTO archives (
@@ -65,14 +62,12 @@ def save_metadata_draft(id, metadata: dict):
                 """,
                 metadata
             )
-            # Update Status
             cur.execute("UPDATE artifact_queue SET status='ANALYZED' WHERE id=%s", (id,))
         conn.commit()
     finally:
         conn.close()
 
 def log_media_asset(artifact_id, image_url, role="Primary"):
-    """Registers an image file found for an artifact."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -87,7 +82,40 @@ def log_media_asset(artifact_id, image_url, role="Primary"):
     finally:
         conn.close()
 
-# ... (Keep existing log_thought, get_config, save_config functions) ...
+# --- Discovery State Management (NEW) ---
+
+def get_discovery_state(source_name):
+    """Gets the next page to scrape."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT last_page_scraped FROM discovery_state WHERE source_name = %s", (source_name,))
+            row = cur.fetchone()
+            return row['last_page_scraped'] if row else 0
+    finally:
+        conn.close()
+
+def update_discovery_state(source_name, page_number):
+    """Updates the bookmark."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO discovery_state (source_name, last_page_scraped) 
+                VALUES (%s, %s)
+                ON CONFLICT (source_name) DO UPDATE SET 
+                last_page_scraped = EXCLUDED.last_page_scraped,
+                updated_at = NOW()
+                """,
+                (source_name, page_number)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+# --- System Utils ---
+
 def log_thought(agent_name: str, message: str, visual_context: str = None):
     conn = get_connection()
     try:

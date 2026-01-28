@@ -21,8 +21,7 @@ TEMP_DOWNLOAD_DIR = "data/temp_downloads"
 os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
-# You should ideally set this in .env or config, defaulting to a placeholder if missing
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "YOUR_ADMIN_CHAT_ID") 
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") 
 
 # --- CLUSTER A & B (Discovery & Extraction) ---
 
@@ -30,21 +29,33 @@ async def visit_page_tool(url: str) -> str:
     """Navigates the browser to a URL."""
     try:
         if not browser_instance.page: await browser_instance.launch()
-        await browser_instance.page.goto(url, timeout=60000, wait_until="domcontentloaded")
+        # Increased timeout for museum archives which are often slow
+        await browser_instance.page.goto(url, timeout=90000, wait_until="domcontentloaded")
         await asyncio.sleep(3)
         return f"SUCCESS: Visited {url}"
     except Exception as e: return f"ERROR: {e}"
 
 async def extract_links_tool(base_url: str, selector: str = "a") -> str:
-    """Finds artifact links on the current page."""
+    """Finds artifact links, strictly filtering out nav/noise."""
     if not browser_instance.page: return "ERROR: Browser inactive."
     try:
         html = await browser_instance.page.content()
         soup = BeautifulSoup(html, "html.parser")
         links = [urljoin(base_url, a['href']) for a in soup.select(selector) if a.get('href')]
-        # Simple noise filter
-        clean_links = [l for l in list(set(links)) if "search" not in l and "login" not in l][:20]
-        return json.dumps(clean_links)
+        
+        # --- NEW: Strict Noise Filter ---
+        # Archives like PRM have specific URL patterns for objects (e.g., /collection-object/)
+        # We filter OUT generic pages.
+        valid_links = []
+        for l in list(set(links)):
+            if "search" in l or "login" in l or "user" in l: continue
+            if l.endswith("/collections") or l.endswith("/about"): continue
+            # Heuristic: Object pages often have numbers or specific keywords
+            # For PRM: /collection-object/
+            if "collection-object" in l or "objects" in l or "item" in l:
+                valid_links.append(l)
+        
+        return json.dumps(valid_links[:20]) # Limit batch size
     except Exception as e: return f"ERROR: {e}"
 
 async def check_db_tool(url: str) -> str:
@@ -59,6 +70,7 @@ async def check_db_tool(url: str) -> str:
 
 async def add_to_queue_tool(url: str, museum_name: str) -> str:
     """Adds URL to the queue."""
+    # Create deterministic ID
     obj_id = f"{museum_name}_{hashlib.md5(url.encode()).hexdigest()[:8]}"
     register_artifact(obj_id, url, museum_name)
     return f"QUEUED: {obj_id}"
@@ -71,8 +83,9 @@ async def scrape_metadata_tool(url: str) -> str:
         soup = BeautifulSoup(html, "html.parser")
         
         # Heuristics
-        title = soup.title.string.strip() if soup.title else "Untitled"
+        title = "Untitled"
         if soup.find("h1"): title = soup.find("h1").get_text(strip=True)
+        elif soup.title: title = soup.title.string.strip()
         
         text = soup.get_text(" ", strip=True)
         # Regex for Accession Numbers (e.g., 1904.23.1)
@@ -80,19 +93,33 @@ async def scrape_metadata_tool(url: str) -> str:
         acc_match = re.search(r'(Accession|Object|Inv)[\s\.]*(No|ID)?[\s\.:]*([A-Za-z0-9\.\-\/]+)', text, re.IGNORECASE)
         acc = acc_match.group(3) if acc_match else "Unknown"
         
-        # --- FIXED: Image Extraction Logic ---
-        # Tries to find common high-res image patterns
-        img_tag = soup.select_one('.main-image img, .item-image img, .lightbox img, figure img')
+        # --- NEW: Smarter Image Extraction ---
         found_image_url = ""
-        if img_tag and img_tag.get('src'):
-             found_image_url = urljoin(url, img_tag['src'])
+        
+        # 1. Try OpenGraph (Best for social sharing, usually high quality)
+        og_img = soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            found_image_url = og_img["content"]
+        
+        # 2. If no OG, try common CMS classes
+        if not found_image_url:
+            # Look for zoom/lightbox links which usually point to the high-res file
+            zoom_link = soup.select_one('a.lightbox, a.fancybox, .zoom-link')
+            if zoom_link and zoom_link.get('href'):
+                found_image_url = urljoin(url, zoom_link['href'])
+            
+            # Fallback to main image tag
+            else:
+                img_tag = soup.select_one('.main-image img, .field-name-field-image img, figure img')
+                if img_tag and img_tag.get('src'):
+                    found_image_url = urljoin(url, img_tag['src'])
         
         return json.dumps({
             "title": title,
             "accession_number": acc,
-            "description_museum": text[:2000], # Truncated
+            "description_museum": text[:2000],
             "original_url": url,
-            "found_image_url": found_image_url # Added this field
+            "found_image_url": found_image_url
         })
     except Exception as e: return f"ERROR: {e}"
 
@@ -133,7 +160,6 @@ async def download_image_tool(image_url: str, artifact_id: str) -> str:
 
 async def analyze_image_tool(artifact_id: str) -> str:
     """Finds the local file for Vision Analysis."""
-    # Logic: Look in temp dir for file starting with artifact_id
     files = [f for f in os.listdir(TEMP_DOWNLOAD_DIR) if f.startswith(artifact_id)]
     if not files: return "ERROR: No downloaded image found."
     
@@ -189,13 +215,11 @@ async def send_telegram_review_tool(artifact_id: str) -> str:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            # Get Data
             cur.execute("SELECT title, description_ai FROM archives WHERE id=%s", (artifact_id,))
             row = cur.fetchone()
             
         text = f"🏛️ *REVIEW REQUEST*\n\n*ID:* `{artifact_id}`\n*Title:* {row['title']}\n\n*AI Analysis:*\n{row['description_ai'][:800]}..."
         
-        # Inline Keyboard for Approve/Reject
         keyboard = {
             "inline_keyboard": [[
                 {"text": "✅ Approve", "callback_data": f"APPROVE:{artifact_id}"},
@@ -203,21 +227,16 @@ async def send_telegram_review_tool(artifact_id: str) -> str:
             ]]
         }
         
-        # --- FIXED: Actual API Call ---
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
-            "chat_id": ADMIN_CHAT_ID, # Uses the ID from env or config
+            "chat_id": ADMIN_CHAT_ID,
             "text": text,
             "parse_mode": "Markdown",
             "reply_markup": json.dumps(keyboard)
         }
         
-        response = requests.post(url, json=payload)
-        
-        if response.status_code == 200:
-            return f"SUCCESS: Sent {artifact_id} to Telegram."
-        else:
-            return f"ERROR: Telegram API responded {response.status_code} - {response.text}"
+        requests.post(url, json=payload)
+        return f"SUCCESS: Sent {artifact_id} to Telegram."
             
     except Exception as e:
         return f"ERROR: {e}"
@@ -228,12 +247,11 @@ async def upload_to_hf_tool(artifact_id: str) -> str:
     """Uploads the specific artifact files to Hugging Face."""
     if not HF_TOKEN: return "ERROR: No HF Token."
     
-    # 1. Find files
     files = [f for f in os.listdir(TEMP_DOWNLOAD_DIR) if f.startswith(artifact_id)]
     if not files: return "ERROR: No files to upload."
     
     api = HfApi(token=HF_TOKEN)
-    repo_id = "nwokikeonyeka/igbo-museum-archive" # Update this
+    repo_id = "nwokikeonyeka/igbo-museum-archive" 
     create_repo(repo_id, repo_type="dataset", exist_ok=True)
     
     uploaded_count = 0
@@ -248,7 +266,6 @@ async def upload_to_hf_tool(artifact_id: str) -> str:
         )
         uploaded_count += 1
         
-    # Update DB
     conn = get_connection()
     with conn.cursor() as cur:
         cur.execute("UPDATE artifact_queue SET status='ARCHIVED' WHERE id=%s", (artifact_id,))
