@@ -1,6 +1,8 @@
 import asyncio
 import time
 import re
+import json
+import random
 from google.adk import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -82,14 +84,15 @@ async def main():
             # --- ROUTING LOGIC ---
 
             if "TASK: DISCOVER" in decision:
-                target = "https://www.prm.ox.ac.uk/search/all?search_api_fulltext=Igbo"
+                # --- FIXED: Random Pagination ---
+                page_num = random.randint(0, 50) 
+                target = f"https://www.prm.ox.ac.uk/search/all?search_api_fulltext=Igbo&page={page_num}"
+                
                 # 1. Navigate
                 await run_adk(navigator_agent, f"Visit {target}", "nav")
                 # 2. Extract
                 links_json = await run_adk(link_extractor_agent, f"Extract links from {target}", "extract")
-                # 3. Deduplicate & Queue (Loop handled by QueueManager internally or loop here)
-                # For simplicity, we assume QueueManager handles the list in one go or we loop here
-                # We'll let the model parse the JSON
+                # 3. Deduplicate & Queue 
                 await run_adk(queue_manager_agent, f"Queue these links: {links_json}. Museum: Pitt Rivers.", "queue")
 
             elif "TASK: EXTRACT" in decision:
@@ -97,17 +100,40 @@ async def main():
                 if item:
                     uid, url = item['id'], item['url']
                     print(f"[Extraction] Processing {uid}...")
-                    # 1. Parse Metadata
-                    await run_adk(html_parser_agent, f"Scrape metadata from {url}", "parser")
-                    # 2. Download Image
-                    await run_adk(downloader_agent, f"Download image from {url} for ID {uid}", "down")
                     
-                    # Manually advance state to EXTRACTED if agents succeeded
-                    conn = get_connection()
-                    with conn.cursor() as cur:
-                        cur.execute("UPDATE artifact_queue SET status='EXTRACTED' WHERE id=%s", (uid,))
-                    conn.commit()
-                    conn.close()
+                    # 1. Parse Metadata
+                    metadata_response = await run_adk(html_parser_agent, f"Scrape metadata from {url}", "parser")
+                    
+                    # --- FIXED: Logic to find Image URL ---
+                    img_url = None
+                    try:
+                        # Attempt to parse the JSON returned by the scraper tool
+                        # Note: The agent might wrap the JSON in text, so this is a basic extraction attempt
+                        # A more robust regex might be needed depending on model verbosity
+                        json_match = re.search(r'\{.*\}', metadata_response, re.DOTALL)
+                        if json_match:
+                            meta_data = json.loads(json_match.group(0))
+                            img_url = meta_data.get("found_image_url")
+                    except Exception as e:
+                        print(f"[System] Metadata parse warning: {e}")
+
+                    # 2. Download Image (Only if we found one)
+                    if img_url:
+                        await run_adk(downloader_agent, f"Download image from {img_url} for ID {uid}", "down")
+                        
+                        # Manually advance state to EXTRACTED if agents succeeded
+                        conn = get_connection()
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE artifact_queue SET status='EXTRACTED' WHERE id=%s", (uid,))
+                        conn.commit()
+                        conn.close()
+                    else:
+                        print(f"[System] ⚠️ No image URL found for {uid}. Marking as REJECTED.")
+                        conn = get_connection()
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE artifact_queue SET status='REJECTED' WHERE id=%s", (uid,))
+                        conn.commit()
+                        conn.close()
 
             elif "TASK: ANALYZE" in decision:
                 item = await fetch_job("EXTRACTED")
@@ -118,7 +144,6 @@ async def main():
                     visual_facts = await run_adk(visual_analyst_agent, f"Analyze artifact {uid}", "vis")
                     
                     # 2. Historical Research
-                    # Need title/loc from archives table
                     conn = get_connection()
                     with conn.cursor() as cur:
                         cur.execute("SELECT title, location FROM archives WHERE id=%s", (uid,))

@@ -4,6 +4,7 @@ import json
 import shutil
 import requests
 import hashlib
+import asyncio
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from huggingface_hub import HfApi, create_repo
@@ -20,6 +21,8 @@ TEMP_DOWNLOAD_DIR = "data/temp_downloads"
 os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
+# You should ideally set this in .env or config, defaulting to a placeholder if missing
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "YOUR_ADMIN_CHAT_ID") 
 
 # --- CLUSTER A & B (Discovery & Extraction) ---
 
@@ -61,7 +64,7 @@ async def add_to_queue_tool(url: str, museum_name: str) -> str:
     return f"QUEUED: {obj_id}"
 
 async def scrape_metadata_tool(url: str) -> str:
-    """Reads Title, ID, and Date from the HTML."""
+    """Reads Title, ID, Date, and Image URL from the HTML."""
     if not browser_instance.page: return "ERROR: Browser inactive."
     try:
         html = await browser_instance.page.content()
@@ -77,11 +80,19 @@ async def scrape_metadata_tool(url: str) -> str:
         acc_match = re.search(r'(Accession|Object|Inv)[\s\.]*(No|ID)?[\s\.:]*([A-Za-z0-9\.\-\/]+)', text, re.IGNORECASE)
         acc = acc_match.group(3) if acc_match else "Unknown"
         
+        # --- FIXED: Image Extraction Logic ---
+        # Tries to find common high-res image patterns
+        img_tag = soup.select_one('.main-image img, .item-image img, .lightbox img, figure img')
+        found_image_url = ""
+        if img_tag and img_tag.get('src'):
+             found_image_url = urljoin(url, img_tag['src'])
+        
         return json.dumps({
             "title": title,
             "accession_number": acc,
             "description_museum": text[:2000], # Truncated
-            "original_url": url
+            "original_url": url,
+            "found_image_url": found_image_url # Added this field
         })
     except Exception as e: return f"ERROR: {e}"
 
@@ -100,6 +111,8 @@ async def save_draft_tool(artifact_id: str, metadata_json: str) -> str:
 async def download_image_tool(image_url: str, artifact_id: str) -> str:
     """Downloads the raw image file."""
     try:
+        if not image_url: return "ERROR: Empty Image URL"
+        
         r = requests.get(image_url, stream=True, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code != 200: return f"ERROR: HTTP {r.status_code}"
         
@@ -179,16 +192,35 @@ async def send_telegram_review_tool(artifact_id: str) -> str:
             # Get Data
             cur.execute("SELECT title, description_ai FROM archives WHERE id=%s", (artifact_id,))
             row = cur.fetchone()
-            # Get Image
-            cur.execute("SELECT artifact_id FROM media_assets WHERE artifact_id=%s LIMIT 1", (artifact_id,)) # Just checking existence
-            # In real app, we'd send the actual photo using multipart/form-data
             
-        msg = f"🏛️ **REVIEW REQUEST**\n\n**ID:** {artifact_id}\n**Title:** {row['title']}\n\n**AI Description:**\n{row['description_ai'][:500]}..."
+        text = f"🏛️ *REVIEW REQUEST*\n\n*ID:* `{artifact_id}`\n*Title:* {row['title']}\n\n*AI Analysis:*\n{row['description_ai'][:800]}..."
         
-        # Send to your Chat ID (Hardcoded or from Env)
-        # For this tool, we assume a known ADMIN_CHAT_ID or fetch from DB config
-        # This is a simplified implementation
-        return f"SUCCESS: Sent {artifact_id} to Telegram."
+        # Inline Keyboard for Approve/Reject
+        keyboard = {
+            "inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"APPROVE:{artifact_id}"},
+                {"text": "❌ Reject", "callback_data": f"REJECT:{artifact_id}"}
+            ]]
+        }
+        
+        # --- FIXED: Actual API Call ---
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": ADMIN_CHAT_ID, # Uses the ID from env or config
+            "text": text,
+            "parse_mode": "Markdown",
+            "reply_markup": json.dumps(keyboard)
+        }
+        
+        response = requests.post(url, json=payload)
+        
+        if response.status_code == 200:
+            return f"SUCCESS: Sent {artifact_id} to Telegram."
+        else:
+            return f"ERROR: Telegram API responded {response.status_code} - {response.text}"
+            
+    except Exception as e:
+        return f"ERROR: {e}"
     finally:
         conn.close()
 
