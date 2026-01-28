@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: museum-curator-bot
+    env: python
+    region: ohio 
+    plan: free   
+    
+    # The Modern Build Command
+    buildCommand: "./build.sh"
+    
+    # Start the Telegram Bot 
+    startCommand: "python bot.py"
+    
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false 

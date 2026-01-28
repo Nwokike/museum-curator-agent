@@ -1,0 +1,16 @@
+# --- Core Frameworks ---
+python-telegram-bot[job-queue]>=21.9  
+google-adk>=0.5.0                     
+litellm>=1.60.0                       
+
+# --- Infrastructure ---
+playwright>=1.49.0
+psycopg2-binary>=2.9.9               
+python-dotenv>=1.0.0
+gunicorn>=21.2.0                      
+uvicorn>=0.27.0                       
+
+# --- Utilities ---
+huggingface_hub>=0.26.0
+groq>=0.13.0
+pandas>=2.2.0
